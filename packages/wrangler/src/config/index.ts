@@ -91,33 +91,13 @@ export function readConfig(
 	requirePagesConfig?: boolean,
 	hideWarnings: boolean = false
 ): Config {
-	let rawConfig: RawConfig = {};
+	const { rawConfig, configPath: updateConfigPath } = parseConfig(
+		configPath,
+		args,
+		requirePagesConfig
+	);
 
-	if (!configPath) {
-		configPath = findWranglerConfig(process.cwd());
-	}
-
-	try {
-		// Load the configuration from disk if available
-		if (configPath?.endsWith("toml")) {
-			rawConfig = parseTOML(readFileSync(configPath), configPath);
-		} else if (configPath?.endsWith("json") || configPath?.endsWith("jsonc")) {
-			rawConfig = parseJSONC(readFileSync(configPath), configPath);
-		}
-	} catch (e) {
-		// Swallow parsing errors if we require a pages config file.
-		// At this point, we can't tell if the user intended to provide a Pages config file (and so should see the parsing error) or not (and so shouldn't).
-		// We err on the side of swallowing the error so as to not break existing projects
-		if (requirePagesConfig) {
-			logger.error(e);
-			throw new FatalError(
-				`Your ${configFileName(configPath)} file is not a valid Pages config file`,
-				EXIT_CODE_INVALID_PAGES_CONFIG
-			);
-		} else {
-			throw e;
-		}
-	}
+	configPath = updateConfigPath;
 
 	/**
 	 * Check if configuration file belongs to a Pages project.
@@ -173,6 +153,41 @@ export function readConfig(
 	return config;
 }
 
+export const parseConfig = (
+	configPath: string | undefined,
+	// Include command specific args as well as the wrangler global flags
+	args: ReadConfigCommandArgs,
+	requirePagesConfig?: boolean
+) => {
+	let rawConfig: RawConfig = {};
+
+	if (!configPath) {
+		configPath = findWranglerConfig(process.cwd());
+	}
+
+	try {
+		// Load the configuration from disk if available
+		if (configPath?.endsWith("toml")) {
+			rawConfig = parseTOML(readFileSync(configPath), configPath);
+		} else if (configPath?.endsWith("json") || configPath?.endsWith("jsonc")) {
+			rawConfig = parseJSONC(readFileSync(configPath), configPath);
+		}
+	} catch (e) {
+		// Swallow parsing errors if we require a pages config file.
+		// At this point, we can't tell if the user intended to provide a Pages config file (and so should see the parsing error) or not (and so shouldn't).
+		// We err on the side of swallowing the error so as to not break existing projects
+		if (requirePagesConfig) {
+			logger.error(e);
+			throw new FatalError(
+				`Your ${configFileName(configPath)} file is not a valid Pages config file`,
+				EXIT_CODE_INVALID_PAGES_CONFIG
+			);
+		} else {
+			throw e;
+		}
+	}
+	return { rawConfig, configPath };
+};
 /**
  * Modifies the provided config to support python workers, if the entrypoint is a .py file
  */

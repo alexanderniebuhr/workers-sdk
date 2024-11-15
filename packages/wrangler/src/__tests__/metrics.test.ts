@@ -1,160 +1,105 @@
-import { mkdirSync } from "node:fs";
 import { http, HttpResponse } from "msw";
 import { vi } from "vitest";
-import { version as wranglerVersion } from "../../package.json";
-import { purgeConfigCaches, saveToConfigCache } from "../config-cache";
+import { defineCommand, defineNamespace } from "../core";
+import { DefinitionTreeRoot } from "../core/define-command";
+import { UserError } from "../errors";
 import { CI } from "../is-ci";
 import { logger } from "../logger";
-import { getMetricsConfig, getMetricsDispatcher } from "../metrics";
 import {
-	CURRENT_METRICS_DATE,
+	getConfigFileType,
+	getNodeVersion,
+	getOS,
+	getOSVersion,
+	getPlatform,
+	getWranglerVersion,
+} from "../metrics/helpers";
+import {
+	getMetricsConfig,
 	readMetricsConfig,
-	USER_ID_CACHE_PATH,
 	writeMetricsConfig,
 } from "../metrics/metrics-config";
-import { writeAuthConfigFile } from "../user";
+import {
+	getMetricsDispatcher,
+	redactArgValues,
+} from "../metrics/metrics-dispatcher";
 import { mockConsoleMethods } from "./helpers/mock-console";
-import { clearDialogs, mockConfirm } from "./helpers/mock-dialogs";
 import { useMockIsTTY } from "./helpers/mock-istty";
-import { msw, mswSuccessOauthHandlers } from "./helpers/msw";
+import { msw } from "./helpers/msw";
 import { runInTempDir } from "./helpers/run-in-tmp";
+import { runWrangler } from "./helpers/run-wrangler";
+import { writeWranglerToml } from "./helpers/write-wrangler-toml";
+import type { DefinitionTreeNode } from "../core/define-command";
 import type { MockInstance } from "vitest";
 
-declare const global: { SPARROW_SOURCE_KEY: string | undefined };
+vi.mock("../metrics/helpers");
 vi.unmock("../metrics/metrics-config");
 
 describe("metrics", () => {
-	const ORIGINAL_SPARROW_SOURCE_KEY = global.SPARROW_SOURCE_KEY;
+	let isCISpy: MockInstance;
 	const std = mockConsoleMethods();
+	const { setIsTTY } = useMockIsTTY();
 	runInTempDir();
 
 	beforeEach(async () => {
-		global.SPARROW_SOURCE_KEY = "MOCK_KEY";
+		isCISpy = vi.spyOn(CI, "isCI").mockReturnValue(false);
+		setIsTTY(true);
+		vi.stubEnv("SPARROW_SOURCE_KEY", "MOCK_KEY");
 		logger.loggerLevel = "debug";
-		// Create a node_modules directory to store config-cache files
-		mkdirSync("node_modules");
 	});
+
 	afterEach(() => {
-		global.SPARROW_SOURCE_KEY = ORIGINAL_SPARROW_SOURCE_KEY;
-		purgeConfigCaches();
-		clearDialogs();
+		vi.unstubAllEnvs();
+		isCISpy.mockClear();
 	});
 
 	describe("getMetricsDispatcher()", () => {
-		const MOCK_DISPATCHER_OPTIONS = {
-			// By setting this to true we avoid the `getMetricsConfig()` logic in these tests.
-			sendMetrics: true,
-			offline: false,
-		};
-
-		// These tests should never hit the `/user` API endpoint.
-		const userRequests = mockUserRequest();
-		afterEach(() => {
-			expect(userRequests.count).toBe(0);
+		beforeEach(() => {
+			vi.mocked(getOS).mockReturnValue("foo:bar");
+			vi.mocked(getWranglerVersion).mockReturnValue("1.2.3");
+			vi.mocked(getOSVersion).mockReturnValue("mock os version");
+			vi.mocked(getNodeVersion).mockReturnValue("1.1.1");
+			vi.mocked(getPlatform).mockReturnValue("mock platform");
+			vi.mocked(getConfigFileType).mockReturnValue("toml");
+			vi.useFakeTimers({
+				now: new Date(2024, 11, 12),
+			});
+			writeMetricsConfig({
+				permission: {
+					enabled: true,
+					date: new Date(2024, 11, 11),
+				},
+				deviceId: "f82b1f46-eb7b-4154-aa9f-ce95f23b2288",
+			});
 		});
 
-		describe("identify()", () => {
-			it("should send a request to the default URL", async () => {
-				const request = mockMetricRequest(
-					{
-						event: "identify",
-						properties: {
-							category: "Workers",
-							wranglerVersion,
-							os: process.platform + ":" + process.arch,
-							a: 1,
-							b: 2,
-						},
-					},
-					{ "Sparrow-Source-Key": "MOCK_KEY" },
-					"identify"
-				);
-				const dispatcher = await getMetricsDispatcher(MOCK_DISPATCHER_OPTIONS);
-				await dispatcher.identify({ a: 1, b: 2 });
-
-				expect(request.count).toBe(1);
-				expect(std.debug).toMatchInlineSnapshot(
-					`"Metrics dispatcher: Posting data {\\"type\\":\\"identify\\",\\"name\\":\\"identify\\",\\"properties\\":{\\"a\\":1,\\"b\\":2}}"`
-				);
-				expect(std.out).toMatchInlineSnapshot(`""`);
-				expect(std.warn).toMatchInlineSnapshot(`""`);
-				expect(std.err).toMatchInlineSnapshot(`""`);
-			});
-
-			it("should write a debug log if the dispatcher is disabled", async () => {
-				const requests = mockMetricRequest({}, {}, "identify");
-				const dispatcher = await getMetricsDispatcher({
-					...MOCK_DISPATCHER_OPTIONS,
-					sendMetrics: false,
-				});
-				await dispatcher.identify({ a: 1, b: 2 });
-				await flushPromises();
-
-				expect(requests.count).toBe(0);
-				expect(std.debug).toMatchInlineSnapshot(
-					`"Metrics dispatcher: Dispatching disabled - would have sent {\\"type\\":\\"identify\\",\\"name\\":\\"identify\\",\\"properties\\":{\\"a\\":1,\\"b\\":2}}."`
-				);
-				expect(std.out).toMatchInlineSnapshot(`""`);
-				expect(std.warn).toMatchInlineSnapshot(`""`);
-				expect(std.err).toMatchInlineSnapshot(`""`);
-			});
-
-			it("should write a debug log if the request fails", async () => {
-				msw.use(
-					http.post("*/identify", async () => {
-						return HttpResponse.error();
-					})
-				);
-
-				const dispatcher = await getMetricsDispatcher(MOCK_DISPATCHER_OPTIONS);
-				await dispatcher.identify({ a: 1, b: 2 });
-				await flushPromises();
-				expect(std.debug).toMatchInlineSnapshot(`
-					"Metrics dispatcher: Posting data {\\"type\\":\\"identify\\",\\"name\\":\\"identify\\",\\"properties\\":{\\"a\\":1,\\"b\\":2}}
-					Metrics dispatcher: Failed to send request: Failed to fetch"
-				`);
-				expect(std.out).toMatchInlineSnapshot(`""`);
-				expect(std.warn).toMatchInlineSnapshot(`""`);
-				expect(std.err).toMatchInlineSnapshot(`""`);
-			});
-
-			it("should write a warning log if no source key has been provided", async () => {
-				global.SPARROW_SOURCE_KEY = undefined;
-				const dispatcher = await getMetricsDispatcher(MOCK_DISPATCHER_OPTIONS);
-				await dispatcher.identify({ a: 1, b: 2 });
-				expect(std.debug).toMatchInlineSnapshot(
-					`"Metrics dispatcher: Source Key not provided. Be sure to initialize before sending events. { type: 'identify', name: 'identify', properties: { a: 1, b: 2 } }"`
-				);
-				expect(std.out).toMatchInlineSnapshot(`""`);
-				expect(std.warn).toMatchInlineSnapshot(`""`);
-				expect(std.err).toMatchInlineSnapshot(`""`);
-			});
+		afterEach(() => {
+			vi.useRealTimers();
 		});
 
 		describe("sendEvent()", () => {
 			it("should send a request to the default URL", async () => {
-				const requests = mockMetricRequest(
-					{
-						event: "some-event",
-						properties: {
-							category: "Workers",
-							wranglerVersion,
-							os: process.platform + ":" + process.arch,
-							a: 1,
-							b: 2,
-						},
-					},
-					{
-						"Sparrow-Source-Key": "MOCK_KEY",
-					},
-					"event"
-				);
-				const dispatcher = await getMetricsDispatcher(MOCK_DISPATCHER_OPTIONS);
+				const requests = mockMetricRequest();
+				// {
+				// 	event: "some-event",
+				// 	properties: {
+				// 		category: "Workers",
+				// 		wranglerVersion: "1.2.3",
+				// 		os: "foo:bar",
+				// 		a: 1,
+				// 		b: 2,
+				// 	},
+				// },
+				// {
+				// 	"Sparrow-Source-Key": "MOCK_KEY",
+				// }
+				const dispatcher = await getMetricsDispatcher({
+					sendMetrics: true,
+				});
 				await dispatcher.sendEvent("some-event", { a: 1, b: 2 });
 
 				expect(requests.count).toBe(1);
 				expect(std.debug).toMatchInlineSnapshot(
-					`"Metrics dispatcher: Posting data {\\"type\\":\\"event\\",\\"name\\":\\"some-event\\",\\"properties\\":{\\"a\\":1,\\"b\\":2}}"`
+					`"Metrics dispatcher: Posting data {\\"deviceId\\":\\"f82b1f46-eb7b-4154-aa9f-ce95f23b2288\\",\\"event\\":\\"some-event\\",\\"timestamp\\":1733961600000,\\"properties\\":{\\"category\\":\\"Workers\\",\\"wranglerVersion\\":\\"1.2.3\\",\\"os\\":\\"foo:bar\\",\\"a\\":1,\\"b\\":2}}"`
 				);
 				expect(std.out).toMatchInlineSnapshot(`""`);
 				expect(std.warn).toMatchInlineSnapshot(`""`);
@@ -162,18 +107,15 @@ describe("metrics", () => {
 			});
 
 			it("should write a debug log if the dispatcher is disabled", async () => {
-				const requests = mockMetricRequest({}, {}, "event");
-
+				const requests = mockMetricRequest();
 				const dispatcher = await getMetricsDispatcher({
-					...MOCK_DISPATCHER_OPTIONS,
 					sendMetrics: false,
 				});
 				await dispatcher.sendEvent("some-event", { a: 1, b: 2 });
-				await flushPromises();
 
 				expect(requests.count).toBe(0);
 				expect(std.debug).toMatchInlineSnapshot(
-					`"Metrics dispatcher: Dispatching disabled - would have sent {\\"type\\":\\"event\\",\\"name\\":\\"some-event\\",\\"properties\\":{\\"a\\":1,\\"b\\":2}}."`
+					`"Metrics dispatcher: Dispatching disabled - would have sent {\\"deviceId\\":\\"f82b1f46-eb7b-4154-aa9f-ce95f23b2288\\",\\"event\\":\\"some-event\\",\\"timestamp\\":1733961600000,\\"properties\\":{\\"category\\":\\"Workers\\",\\"wranglerVersion\\":\\"1.2.3\\",\\"os\\":\\"foo:bar\\",\\"a\\":1,\\"b\\":2}}."`
 				);
 				expect(std.out).toMatchInlineSnapshot(`""`);
 				expect(std.warn).toMatchInlineSnapshot(`""`);
@@ -186,11 +128,14 @@ describe("metrics", () => {
 						return HttpResponse.error();
 					})
 				);
-				const dispatcher = await getMetricsDispatcher(MOCK_DISPATCHER_OPTIONS);
+				const dispatcher = await getMetricsDispatcher({
+					sendMetrics: true,
+				});
 				await dispatcher.sendEvent("some-event", { a: 1, b: 2 });
 				await flushPromises();
+
 				expect(std.debug).toMatchInlineSnapshot(`
-					"Metrics dispatcher: Posting data {\\"type\\":\\"event\\",\\"name\\":\\"some-event\\",\\"properties\\":{\\"a\\":1,\\"b\\":2}}
+					"Metrics dispatcher: Posting data {\\"deviceId\\":\\"f82b1f46-eb7b-4154-aa9f-ce95f23b2288\\",\\"event\\":\\"some-event\\",\\"timestamp\\":1733961600000,\\"properties\\":{\\"category\\":\\"Workers\\",\\"wranglerVersion\\":\\"1.2.3\\",\\"os\\":\\"foo:bar\\",\\"a\\":1,\\"b\\":2}}
 					Metrics dispatcher: Failed to send request: Failed to fetch"
 				`);
 				expect(std.out).toMatchInlineSnapshot(`""`);
@@ -199,29 +144,401 @@ describe("metrics", () => {
 			});
 
 			it("should write a warning log if no source key has been provided", async () => {
-				global.SPARROW_SOURCE_KEY = undefined;
-				const requests = mockMetricRequest({}, {}, "event");
-				const dispatcher = await getMetricsDispatcher(MOCK_DISPATCHER_OPTIONS);
+				vi.stubEnv("SPARROW_SOURCE_KEY", undefined);
+
+				const requests = mockMetricRequest();
+				const dispatcher = await getMetricsDispatcher({
+					sendMetrics: true,
+				});
 				await dispatcher.sendEvent("some-event", { a: 1, b: 2 });
 
 				expect(requests.count).toBe(0);
 				expect(std.debug).toMatchInlineSnapshot(
-					`"Metrics dispatcher: Source Key not provided. Be sure to initialize before sending events. { type: 'event', name: 'some-event', properties: { a: 1, b: 2 } }"`
+					`"Metrics dispatcher: Source Key not provided. Be sure to initialize before sending events {\\"deviceId\\":\\"f82b1f46-eb7b-4154-aa9f-ce95f23b2288\\",\\"event\\":\\"some-event\\",\\"timestamp\\":1733961600000,\\"properties\\":{\\"category\\":\\"Workers\\",\\"wranglerVersion\\":\\"1.2.3\\",\\"os\\":\\"foo:bar\\",\\"a\\":1,\\"b\\":2}}"`
 				);
 				expect(std.out).toMatchInlineSnapshot(`""`);
 				expect(std.warn).toMatchInlineSnapshot(`""`);
 				expect(std.err).toMatchInlineSnapshot(`""`);
 			});
 		});
+
+		it("should keep track of all requests made", async () => {
+			const requests = mockMetricRequest();
+			const dispatcher = await getMetricsDispatcher({
+				sendMetrics: true,
+			});
+
+			void dispatcher.sendEvent("some-event", { a: 1, b: 2 });
+			expect(dispatcher.requests.length).toBe(1);
+
+			expect(requests.count).toBe(0);
+			await Promise.allSettled(dispatcher.requests);
+			expect(requests.count).toBe(1);
+
+			void dispatcher.sendEvent("another-event", { c: 3, d: 4 });
+			expect(dispatcher.requests.length).toBe(2);
+
+			expect(requests.count).toBe(1);
+			await Promise.allSettled(dispatcher.requests);
+			expect(requests.count).toBe(2);
+		});
+
+		describe("sendNewEvent()", () => {
+			let originalDefinitions: [string, DefinitionTreeNode][];
+			// const commonProperties =
+			beforeAll(() => {
+				originalDefinitions = [...DefinitionTreeRoot.subtree.entries()];
+				// register a no-op test command
+				defineNamespace({
+					command: "wrangler command",
+					metadata: {
+						description: "test command namespace",
+						owner: "Workers: Authoring and Testing",
+						status: "stable",
+					},
+				});
+
+				defineCommand({
+					command: "wrangler command subcommand",
+					metadata: {
+						description: "test command",
+						owner: "Workers: Authoring and Testing",
+						status: "stable",
+					},
+					args: {
+						positional: {
+							type: "string",
+							demandOption: true,
+						},
+						optional: {
+							type: "string",
+						},
+						default: {
+							type: "boolean",
+							default: false,
+						},
+						array: {
+							type: "string",
+							array: true,
+							default: ["beep", "boop"],
+						},
+						number: {
+							type: "number",
+							default: 42,
+						},
+					},
+					positionalArgs: ["positional"],
+					handler(args, ctx) {
+						vi.advanceTimersByTime(6000);
+						ctx.logger.log("Ran wrangler command subcommand");
+						if (args.positional === "error") {
+							throw new UserError("oh no");
+						}
+					},
+				});
+			});
+			afterAll(() => {
+				// clean up the command definitions
+				DefinitionTreeRoot.subtree = new Map(originalDefinitions);
+			});
+			const reusedProperties = {
+				wranglerVersion: "1.2.3",
+				osPlatform: "mock platform",
+				osVersion: "mock os version",
+				nodeVersion: "1.1.1",
+				isFirstUsage: false,
+				configFileType: "toml",
+				isCI: false,
+				isInteractive: true,
+			};
+			const reusedGlobalArgs = {
+				"experimental-versions": true,
+				"x-versions": true,
+				"experimental-gradual-rollouts": true,
+				xVersions: true,
+				experimentalGradualRollouts: true,
+				experimentalVersions: true,
+			};
+
+			it("should send a started and completed event", async () => {
+				const requests = mockMetricRequest();
+
+				await runWrangler("command subcommand positional");
+
+				expect(requests.count).toBe(2);
+
+				const expectedStartReq = {
+					deviceId: "f82b1f46-eb7b-4154-aa9f-ce95f23b2288",
+					event: "wrangler command started",
+					timestamp: 1733961600000,
+					properties: {
+						amplitude_session_id: 1733961600000,
+						amplitude_event_id: 0,
+						...reusedProperties,
+						argsUsed: [
+							"array",
+							"number",
+							"positional",
+							"xGradualRollouts",
+							"xVersions",
+						],
+						argsCombination:
+							"array, number, positional, xGradualRollouts, xVersions",
+						command: "wrangler command subcommand",
+						args: {
+							...reusedGlobalArgs,
+							default: false,
+							array: ["<REDACTED>", "<REDACTED>"],
+							number: 42,
+							positional: "<REDACTED>",
+						},
+					},
+				};
+				expect(std.debug).toContain(
+					`Posting data ${JSON.stringify(expectedStartReq)}`
+				);
+				const expectedCompleteReq = {
+					deviceId: "f82b1f46-eb7b-4154-aa9f-ce95f23b2288",
+					event: "wrangler command completed",
+					timestamp: 1733961606000,
+					properties: {
+						amplitude_session_id: 1733961600000,
+						amplitude_event_id: 1,
+						...reusedProperties,
+						argsUsed: [
+							"array",
+							"number",
+							"positional",
+							"xGradualRollouts",
+							"xVersions",
+						],
+						argsCombination:
+							"array, number, positional, xGradualRollouts, xVersions",
+						command: "wrangler command subcommand",
+						args: {
+							...reusedGlobalArgs,
+							default: false,
+							array: ["<REDACTED>", "<REDACTED>"],
+							number: 42,
+							positional: "<REDACTED>",
+						},
+						durationMs: 6000,
+						durationSeconds: 6,
+						durationMinutes: 0.1,
+					},
+				};
+				// command completed
+				expect(std.debug).toContain(
+					`Posting data ${JSON.stringify(expectedCompleteReq)}`
+				);
+				expect(std.out).toMatchInlineSnapshot(`
+					"
+					Cloudflare collects anonymous telemetry about your usage of Wrangler. Learn more at https://github.com/cloudflare/workers-sdk/tree/main/packages/wrangler/telemetry.md
+					Ran wrangler command subcommand"
+				`);
+				expect(std.warn).toMatchInlineSnapshot(`""`);
+				expect(std.err).toMatchInlineSnapshot(`""`);
+			});
+
+			it("should send a started and errored event", async () => {
+				const requests = mockMetricRequest();
+
+				await expect(runWrangler("command subcommand error")).rejects.toThrow(
+					"oh no"
+				);
+
+				expect(requests.count).toBe(2);
+
+				const expectedStartReq = {
+					deviceId: "f82b1f46-eb7b-4154-aa9f-ce95f23b2288",
+					event: "wrangler command started",
+					timestamp: 1733961600000,
+					properties: {
+						amplitude_session_id: 1733961600000,
+						amplitude_event_id: 0,
+						...reusedProperties,
+						argsUsed: [
+							"array",
+							"number",
+							"positional",
+							"xGradualRollouts",
+							"xVersions",
+						],
+						argsCombination:
+							"array, number, positional, xGradualRollouts, xVersions",
+						command: "wrangler command subcommand",
+						args: {
+							...reusedGlobalArgs,
+							default: false,
+							array: ["<REDACTED>", "<REDACTED>"],
+							number: 42,
+							positional: "<REDACTED>",
+						},
+					},
+				};
+				expect(std.debug).toContain(
+					`Posting data ${JSON.stringify(expectedStartReq)}`
+				);
+
+				const expectedErrorReq = {
+					deviceId: "f82b1f46-eb7b-4154-aa9f-ce95f23b2288",
+					event: "wrangler command errored",
+					timestamp: 1733961606000,
+					properties: {
+						amplitude_session_id: 1733961600000,
+						amplitude_event_id: 1,
+						...reusedProperties,
+						argsUsed: [
+							"array",
+							"number",
+							"positional",
+							"xGradualRollouts",
+							"xVersions",
+						],
+						argsCombination:
+							"array, number, positional, xGradualRollouts, xVersions",
+						command: "wrangler command subcommand",
+						args: {
+							...reusedGlobalArgs,
+							default: false,
+							array: ["<REDACTED>", "<REDACTED>"],
+							number: 42,
+							positional: "<REDACTED>",
+						},
+						durationMs: 6000,
+						durationSeconds: 6,
+						durationMinutes: 0.1,
+						errorType: "UserError",
+					},
+				};
+
+				expect(std.debug).toContain(
+					`Posting data ${JSON.stringify(expectedErrorReq)}`
+				);
+			});
+
+			it("should mark isCI as true if running in CI", async () => {
+				isCISpy.mockReturnValue(true);
+				const requests = mockMetricRequest();
+
+				await runWrangler("command subcommand positional");
+
+				expect(requests.count).toBe(2);
+				expect(std.debug).toContain('isCI":true');
+			});
+
+			it("should mark as non-interactive if running in non-interactive environment", async () => {
+				setIsTTY(false);
+				const requests = mockMetricRequest();
+
+				await runWrangler("command subcommand positional");
+
+				expect(requests.count).toBe(2);
+				expect(std.debug).toContain('"isInteractive":false,');
+			});
+
+			describe("banner", () => {
+				beforeEach(() => {
+					vi.mocked(getWranglerVersion).mockReturnValue("1.2.3");
+				});
+				it("should print the banner if current version is different to the stored version", async () => {
+					writeMetricsConfig({
+						permission: {
+							enabled: true,
+							date: new Date(2022, 6, 4),
+							bannerLastShown: "1.2.1",
+						},
+					});
+
+					const requests = mockMetricRequest();
+
+					await runWrangler("command subcommand positional");
+					expect(std.out).toMatchInlineSnapshot(`
+						"
+						Cloudflare collects anonymous telemetry about your usage of Wrangler. Learn more at https://github.com/cloudflare/workers-sdk/tree/main/packages/wrangler/telemetry.md
+						Ran wrangler command subcommand"
+					`);
+
+					expect(requests.count).toBe(2);
+				});
+				it("should not print the banner if current version is the same as the stored version", async () => {
+					writeMetricsConfig({
+						permission: {
+							enabled: true,
+							date: new Date(2022, 6, 4),
+							bannerLastShown: "1.2.3",
+						},
+					});
+					const requests = mockMetricRequest();
+					await runWrangler("command subcommand positional");
+					expect(std.out).toMatchInlineSnapshot(`
+						"Ran wrangler command subcommand"
+					`);
+					expect(requests.count).toBe(2);
+				});
+				it("should print the banner if nothing is stored under bannerLastShown and then store the current version", async () => {
+					writeMetricsConfig({
+						permission: {
+							enabled: true,
+							date: new Date(2022, 6, 4),
+						},
+					});
+					const requests = mockMetricRequest();
+					await runWrangler("command subcommand positional");
+					expect(std.out).toMatchInlineSnapshot(`
+						"
+						Cloudflare collects anonymous telemetry about your usage of Wrangler. Learn more at https://github.com/cloudflare/workers-sdk/tree/main/packages/wrangler/telemetry.md
+						Ran wrangler command subcommand"
+					`);
+					expect(requests.count).toBe(2);
+					const { permission } = readMetricsConfig();
+					expect(permission?.bannerLastShown).toEqual("1.2.3");
+				});
+				it("should not print the banner if telemetry permission is disabled", async () => {
+					writeMetricsConfig({
+						permission: {
+							enabled: false,
+							date: new Date(2022, 6, 4),
+						},
+					});
+					const requests = mockMetricRequest();
+					await runWrangler("command subcommand positional");
+					expect(std.out).toMatchInlineSnapshot(`
+						"Ran wrangler command subcommand"
+					`);
+					expect(requests.count).toBe(0);
+					const { permission } = readMetricsConfig();
+					expect(permission?.bannerLastShown).toBeUndefined();
+				});
+			});
+		});
+
+		describe("redactArgValues()", () => {
+			it("should redact sensitive values", () => {
+				const args = {
+					default: false,
+					array: ["beep", "boop"],
+					secretArray: ["beep", "boop"],
+					number: 42,
+					string: "secret",
+					secretString: "secret",
+				};
+
+				const redacted = redactArgValues(args, ["string", "array"]);
+				expect(redacted).toMatchObject({
+					default: false,
+					array: ["beep", "boop"],
+					secretArray: ["<REDACTED>", "<REDACTED>"],
+					number: 42,
+					string: "secret",
+					secretString: "<REDACTED>",
+				});
+			});
+		});
 	});
 
 	describe("getMetricsConfig()", () => {
-		let isCISpy: MockInstance;
-
-		const { setIsTTY } = useMockIsTTY();
 		beforeEach(() => {
-			// Default the mock TTY to interactive for all these tests.
-			setIsTTY(true);
 			isCISpy = vi.spyOn(CI, "isCI").mockReturnValue(false);
 		});
 
@@ -237,40 +554,17 @@ describe("metrics", () => {
 				});
 			});
 
-			it("should return false if running in a CI environment", async () => {
-				isCISpy.mockReturnValue(true);
-				expect(await getMetricsConfig({})).toMatchObject({
-					enabled: false,
-				});
-			});
-
 			it("should return the sendMetrics argument for enabled if it is defined", async () => {
-				expect(
-					await getMetricsConfig({ sendMetrics: false, offline: false })
-				).toMatchObject({
+				expect(await getMetricsConfig({ sendMetrics: false })).toMatchObject({
 					enabled: false,
 				});
-				expect(
-					await getMetricsConfig({ sendMetrics: true, offline: false })
-				).toMatchObject({
+				expect(await getMetricsConfig({ sendMetrics: true })).toMatchObject({
 					enabled: true,
 				});
 			});
 
-			it("should return enabled false if the process is not interactive", async () => {
-				setIsTTY(false);
-				expect(
-					await getMetricsConfig({
-						sendMetrics: undefined,
-						offline: false,
-					})
-				).toMatchObject({
-					enabled: false,
-				});
-			});
-
 			it("should return enabled true if the user on this device previously agreed to send metrics", async () => {
-				await writeMetricsConfig({
+				writeMetricsConfig({
 					permission: {
 						enabled: true,
 						date: new Date(2022, 6, 4),
@@ -279,7 +573,6 @@ describe("metrics", () => {
 				expect(
 					await getMetricsConfig({
 						sendMetrics: undefined,
-						offline: false,
 					})
 				).toMatchObject({
 					enabled: true,
@@ -287,7 +580,7 @@ describe("metrics", () => {
 			});
 
 			it("should return enabled false if the user on this device previously refused to send metrics", async () => {
-				await writeMetricsConfig({
+				writeMetricsConfig({
 					permission: {
 						enabled: false,
 						date: new Date(2022, 6, 4),
@@ -296,194 +589,244 @@ describe("metrics", () => {
 				expect(
 					await getMetricsConfig({
 						sendMetrics: undefined,
-						offline: false,
 					})
 				).toMatchObject({
 					enabled: false,
 				});
 			});
 
-			it("should accept and store permission granting to send metrics if the user agrees", async () => {
-				mockConfirm({
-					text: "Would you like to help improve Wrangler by sending usage metrics to Cloudflare?",
-					result: true,
-				});
-				expect(
-					await getMetricsConfig({
-						sendMetrics: undefined,
-						offline: false,
-					})
-				).toMatchObject({
-					enabled: true,
-				});
-				expect((await readMetricsConfig()).permission).toMatchObject({
-					enabled: true,
-				});
-			});
-
-			it("should accept and store permission declining to send metrics if the user declines", async () => {
-				mockConfirm({
-					text: "Would you like to help improve Wrangler by sending usage metrics to Cloudflare?",
-					result: false,
-				});
-				expect(
-					await getMetricsConfig({
-						sendMetrics: undefined,
-						offline: false,
-					})
-				).toMatchObject({
-					enabled: false,
-				});
-				expect((await readMetricsConfig()).permission).toMatchObject({
-					enabled: false,
-				});
-			});
-
-			it("should ignore the config if the permission date is older than the current metrics date", async () => {
-				mockConfirm({
-					text: "Would you like to help improve Wrangler by sending usage metrics to Cloudflare?",
-					result: false,
-				});
+			it("should print a message if the permission date is older than the current metrics date", async () => {
+				vi.useFakeTimers();
+				vi.setSystemTime(new Date(2024, 11, 12));
 				const OLD_DATE = new Date(2000);
-				await writeMetricsConfig({
+				writeMetricsConfig({
 					permission: { enabled: true, date: OLD_DATE },
 				});
 				expect(
 					await getMetricsConfig({
 						sendMetrics: undefined,
-						offline: false,
 					})
 				).toMatchObject({
-					enabled: false,
+					enabled: true,
 				});
-				const { permission } = await readMetricsConfig();
-				expect(permission?.enabled).toBe(false);
+				const { permission } = readMetricsConfig();
+				expect(permission?.enabled).toBe(true);
 				// The date should be updated to today's date
-				expect(permission?.date).toEqual(CURRENT_METRICS_DATE);
+				expect(permission?.date).toEqual(new Date(2024, 11, 12));
 
 				expect(std.out).toMatchInlineSnapshot(`
-			"Usage metrics tracking has changed since you last granted permission.
-			Your choice has been saved in the following file: test-xdg-config/metrics.json.
-
-			  You can override the user level setting for a project in \`wrangler.toml\`:
-
-			   - to disable sending metrics for a project: \`send_metrics = false\`
-			   - to enable sending metrics for a project: \`send_metrics = true\`"
+			"Usage metrics tracking has changed since you last granted permission."
 		`);
+				vi.useRealTimers();
 			});
 		});
 
 		describe("deviceId", () => {
 			it("should return a deviceId found in the config file", async () => {
-				await writeMetricsConfig({ deviceId: "XXXX-YYYY-ZZZZ" });
+				writeMetricsConfig({ deviceId: "XXXX-YYYY-ZZZZ" });
 				const { deviceId } = await getMetricsConfig({
 					sendMetrics: true,
-					offline: false,
 				});
 				expect(deviceId).toEqual("XXXX-YYYY-ZZZZ");
-				expect((await readMetricsConfig()).deviceId).toEqual(deviceId);
+				expect(readMetricsConfig().deviceId).toEqual(deviceId);
 			});
 
 			it("should create and store a new deviceId if none is found in the config file", async () => {
-				await writeMetricsConfig({});
+				writeMetricsConfig({});
 				const { deviceId } = await getMetricsConfig({
 					sendMetrics: true,
-					offline: false,
 				});
 				expect(deviceId).toMatch(
 					/[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}/
 				);
-				expect((await readMetricsConfig()).deviceId).toEqual(deviceId);
+				expect(readMetricsConfig().deviceId).toEqual(deviceId);
+			});
+		});
+	});
+
+	describe.each(["metrics", "telemetry"])("%s commands", (cmd) => {
+		beforeEach(() => {
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date(2024, 11, 12));
+		});
+		afterEach(() => {
+			vi.useRealTimers();
+		});
+		describe(`${cmd} status`, () => {
+			it("prints the current telemetry status based on the cached metrics config", async () => {
+				writeMetricsConfig({
+					permission: {
+						enabled: true,
+						date: new Date(2022, 6, 4),
+					},
+				});
+				await runWrangler(`${cmd} status`);
+				expect(std.out).toContain("Status: Enabled");
+				expect(std.out).not.toContain("Status: Disabled");
+				writeMetricsConfig({
+					permission: {
+						enabled: false,
+						date: new Date(2022, 6, 4),
+					},
+				});
+				await runWrangler("telemetry status");
+				expect(std.out).toContain("Status: Disabled");
+			});
+
+			it("shows wrangler.toml as the source with send_metrics is present", async () => {
+				writeMetricsConfig({
+					permission: {
+						enabled: true,
+						date: new Date(2022, 6, 4),
+					},
+				});
+				writeWranglerToml({ send_metrics: false });
+				await runWrangler(`${cmd} status`);
+				expect(std.out).toContain("Status: Disabled (set by wrangler.toml)");
+			});
+
+			it("shows environment variable as the source if used", async () => {
+				writeMetricsConfig({
+					permission: {
+						enabled: true,
+						date: new Date(2022, 6, 4),
+					},
+				});
+				vi.stubEnv("WRANGLER_SEND_METRICS", "false");
+				await runWrangler(`${cmd} status`);
+				expect(std.out).toContain(
+					"Status: Disabled (set by environment variable)"
+				);
+			});
+
+			it("defaults to enabled if metrics config is not set", async () => {
+				writeMetricsConfig({});
+				await runWrangler(`${cmd} status`);
+				expect(std.out).toContain("Status: Enabled");
+			});
+
+			it("prioritises environment variable over send_metrics", async () => {
+				writeMetricsConfig({
+					permission: {
+						enabled: true,
+						date: new Date(2022, 6, 4),
+					},
+				});
+				writeWranglerToml({ send_metrics: true });
+				vi.stubEnv("WRANGLER_SEND_METRICS", "false");
+				await runWrangler(`${cmd} status`);
+				expect(std.out).toContain(
+					"Status: Disabled (set by environment variable)"
+				);
 			});
 		});
 
-		describe("userId", () => {
-			const userRequests = mockUserRequest();
-			it("should return a userId found in a cache file", async () => {
-				await saveToConfigCache(USER_ID_CACHE_PATH, {
-					userId: "CACHED_USER_ID",
-				});
-				const { userId } = await getMetricsConfig({
-					sendMetrics: true,
-					offline: false,
-				});
-				expect(userId).toEqual("CACHED_USER_ID");
-				expect(userRequests.count).toBe(0);
+		it(`disables telemetry when "wrangler ${cmd} disable" is run`, async () => {
+			writeMetricsConfig({
+				permission: {
+					enabled: true,
+					date: new Date(2022, 6, 4),
+				},
 			});
+			await runWrangler(`${cmd} disable`);
+			expect(std.out).toContain(`Status: Disabled
 
-			it("should fetch the userId from Cloudflare and store it in a cache file", async () => {
-				writeAuthConfigFile({ oauth_token: "DUMMY_TOKEN" });
-				const { userId } = await getMetricsConfig({
-					sendMetrics: true,
-					offline: false,
-				});
-				await flushPromises();
-
-				expect(userId).toEqual("MOCK_USER_ID");
-				expect(userRequests.count).toBe(1);
+Wrangler is no longer collecting telemetry about your usage.`);
+			expect(readMetricsConfig()).toMatchObject({
+				permission: {
+					enabled: false,
+					date: new Date(2024, 11, 12),
+				},
 			});
+		});
 
-			it("should not fetch the userId from Cloudflare if running in `offline` mode", async () => {
-				writeAuthConfigFile({ oauth_token: "DUMMY_TOKEN" });
-				const { userId } = await getMetricsConfig({
-					sendMetrics: true,
-					offline: true,
-				});
-				expect(userId).toBe(undefined);
-				expect(userRequests.count).toBe(0);
+		it(`doesn't send telemetry when running "wrangler ${cmd} disable"`, async () => {
+			const requests = mockMetricRequest();
+			writeMetricsConfig({
+				permission: {
+					enabled: true,
+					date: new Date(2022, 6, 4),
+				},
+			});
+			await runWrangler(`${cmd} disable`);
+			expect(requests.count).toBe(0);
+			expect(std.debug).not.toContain("Metrics dispatcher: Posting data");
+		});
+
+		it(`does send telemetry when running "wrangler ${cmd} enable"`, async () => {
+			const requests = mockMetricRequest();
+			writeMetricsConfig({
+				permission: {
+					enabled: true,
+					date: new Date(2022, 6, 4),
+				},
+			});
+			await runWrangler(`${cmd} enable`);
+			expect(requests.count).toBe(2);
+			expect(std.debug).toContain("Metrics dispatcher: Posting data");
+		});
+
+		it(`enables telemetry when "wrangler ${cmd} enable" is run`, async () => {
+			writeMetricsConfig({
+				permission: {
+					enabled: false,
+					date: new Date(2022, 6, 4),
+				},
+			});
+			await runWrangler(`${cmd} enable`);
+			expect(std.out).toContain(`Status: Enabled
+
+Wrangler is now collecting telemetry about your usage. Thank you for helping make Wrangler better 🧡`);
+			expect(readMetricsConfig()).toMatchObject({
+				permission: {
+					enabled: true,
+					date: new Date(2024, 11, 12),
+				},
+			});
+		});
+
+		it("doesn't overwrite c3 telemetry config", async () => {
+			writeMetricsConfig({
+				c3permission: {
+					enabled: false,
+					date: new Date(2022, 6, 4),
+				},
+			});
+			await runWrangler(`${cmd} enable`);
+			expect(std.out).toContain(`Status: Enabled
+
+Wrangler is now collecting telemetry about your usage. Thank you for helping make Wrangler better 🧡`);
+			const config = readMetricsConfig();
+			expect(config).toMatchObject({
+				c3permission: {
+					enabled: false,
+					date: new Date(2022, 6, 4),
+				},
+				permission: {
+					enabled: true,
+					date: new Date(2024, 11, 12),
+				},
 			});
 		});
 	});
 });
 
-function mockUserRequest() {
-	const requests = { count: 0 };
-	beforeEach(() => {
-		msw.use(
-			...mswSuccessOauthHandlers,
-			http.get("*/user", () => {
-				requests.count++;
-				return HttpResponse.json(
-					{
-						success: true,
-						errors: [],
-						messages: [],
-						result: { id: "MOCK_USER_ID" },
-					},
-					{ status: 200 }
-				);
-			})
-		);
-	});
-	afterEach(() => {
-		requests.count = 0;
-	});
-	return requests;
-}
-
-function mockMetricRequest(
-	body: unknown,
-	header: unknown,
-	endpoint: "identify" | "event"
-) {
+function mockMetricRequest() {
 	const requests = { count: 0 };
 	msw.use(
-		http.post(
-			`*/${endpoint}`,
-			async ({ request }) => {
-				requests.count++;
-				expect(await request.json()).toEqual(body);
-				expect(request.headers).toContain(header);
-				return HttpResponse.json({}, { status: 200 });
-			},
-			{ once: true }
-		)
+		http.post(`*/event`, async () => {
+			requests.count++;
+			return HttpResponse.json({}, { status: 200 });
+		})
 	);
 
 	return requests;
 }
 
 // Forces a tick to allow the non-awaited fetch promise to resolve.
-function flushPromises(): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, 0));
+async function flushPromises(): Promise<void> {
+	await Promise.all([
+		new Promise((resolve) => setTimeout(resolve, 0)),
+		vi.advanceTimersToNextTimerAsync(),
+	]);
 }

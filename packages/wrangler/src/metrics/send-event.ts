@@ -96,12 +96,6 @@ export function sendMetricsEvent(
 	event: EventNames,
 	options: MetricsConfigOptions
 ): Promise<void>;
-/**
- * Send a metrics event to Cloudflare, if usage tracking is enabled.
- *
- * Generally you should pass the `send_metrics` property from the wrangler.toml config here,
- * which would override any user permissions.
- */
 export function sendMetricsEvent(
 	event: EventNames,
 	properties: Properties,
