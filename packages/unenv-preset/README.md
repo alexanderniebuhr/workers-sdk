@@ -5,9 +5,9 @@
 ## Usage
 
 ```ts
-import { env, nodeless, cloudflare } from "unenv-preset-cloudflare";
+import { cloudflare, env, nodeless } from "unenv-preset-cloudflare";
 
 const {
-  /* ... */
+	/* ... */
 } = env(nodeless, cloudflare);
 ```
