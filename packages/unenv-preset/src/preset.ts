@@ -3,7 +3,7 @@ import type { Preset } from "unenv";
 // Built-in APIs provided by workerd.
 // https://developers.cloudflare.com/workers/runtime-apis/nodejs/
 // https://github.com/cloudflare/workerd/tree/main/src/node
-// Last checked: 2024-05-11
+// Last checked: 2024-10-22
 const cloudflareNodeCompatModules = [
   "_stream_duplex",
   "_stream_passthrough",
@@ -11,14 +11,21 @@ const cloudflareNodeCompatModules = [
   "_stream_transform",
   "_stream_writable",
   "assert",
+  "assert/strict",
+  "buffer",
   "diagnostics_channel",
   "events",
   "path",
+  "path/posix",
+  "path/win32",
+  "querystring",
   "stream",
   "stream/consumers",
   "stream/promises",
   "stream/web",
   "string_decoder",
+  "url",
+  "util/types",
   "zlib",
 ];
 
@@ -27,14 +34,11 @@ const cloudflareNodeCompatModules = [
 const hybridNodeCompatModules = [
   "async_hooks",
   "console",
-  "buffer",
   "crypto",
-  "perf_hooks",
   "module",
   "process",
   "timers",
   "util",
-  "util/types",
 ];
 
 export const cloudflare: Preset = {
@@ -45,18 +49,17 @@ export const cloudflare: Preset = {
         [`node:${p}`, `node:${p}`],
       ]),
     ),
-    // The `node:assert` implementation of workerd uses strict semantics by default
-    "assert/strict": "node:assert",
-    "node:assert/strict": "node:assert",
-    // The `node:sys` module is just a deprecated alias for `node:util` which we implemented using a hybrid polyfill
-    sys: "unenv-preset-cloudflare/runtime/node/util/$cloudflare",
-    "node:sys": "unenv-preset-cloudflare/runtime/node/util/$cloudflare",
+
+    // The `node:sys` module is just a deprecated alias for `node:util`
+    // Keep this until util is a full compat module.
+    sys: "@cloudflare/unenv-preset/runtime/node/util/$cloudflare",
+    "node:sys": "@cloudflare/unenv-preset/runtime/node/util/$cloudflare",
 
     // define aliases for hybrid modules
     ...Object.fromEntries(
       hybridNodeCompatModules.flatMap((m) => [
-        [m, `unenv-preset-cloudflare/runtime/node/${m}/$cloudflare`],
-        [`node:${m}`, `unenv-preset-cloudflare/runtime/node/${m}/$cloudflare`],
+        [m, `@cloudflare/unenv-preset/runtime/node/${m}/$cloudflare`],
+        [`node:${m}`, `@cloudflare/unenv-preset/runtime/node/${m}/$cloudflare`],
       ]),
     ),
   },
@@ -65,27 +68,10 @@ export const cloudflare: Preset = {
     // override the previous presets so that we use the native implementation
     Buffer: false,
     global: false,
-    console: "unenv-preset-cloudflare/runtime/node/console/$cloudflare",
-    process: "unenv-preset-cloudflare/runtime/node/process/$cloudflare",
-    setImmediate: [
-      "unenv-preset-cloudflare/runtime/node/timers/$cloudflare",
-      "setImmediate",
-    ],
-    clearImmediate: [
-      "unenv-preset-cloudflare/runtime/node/timers/$cloudflare",
-      "clearImmediate",
-    ],
-    performance: ["perf_hooks", "performance"],
-    Performance: ["perf_hooks", "Performance"],
-    PerformanceEntry: ["perf_hooks", "PerformanceEntry"],
-    PerformanceMark: ["perf_hooks", "PerformanceMark"],
-    PerformanceMeasure: ["perf_hooks", "PerformanceMeasure"],
-    PerformanceObserver: ["perf_hooks", "PerformanceObserver"],
-    PerformanceObserverEntryList: [
-      "perf_hooks",
-      "PerformanceObserverEntryList",
-    ],
-    PerformanceResourceTiming: ["perf_hooks", "PerformanceResourceTiming"],
+    console: "@cloudflare/unenv-preset/runtime/node/console/$cloudflare",
+    process: "@cloudflare/unenv-preset/runtime/node/process/$cloudflare",
+    setImmediate: ["@cloudflare/unenv-preset/runtime/node/timers/$cloudflare", "setImmediate"],
+    clearImmediate: ["@cloudflare/unenv-preset/runtime/node/timers/$cloudflare", "clearImmediate"],
   },
   polyfill: [],
   external: cloudflareNodeCompatModules.flatMap((p) => [p, `node:${p}`]),

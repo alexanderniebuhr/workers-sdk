@@ -3,19 +3,15 @@ import type nodeProcess from "node:process";
 export {
   _debugEnd,
   _debugProcess,
-  // TODO: implemented yet in unenv
-  //_events,
+  _events,
   _eventsCount,
-  // TODO: implemented yet in unenv
-  //_exiting,
+  _exiting,
   _fatalException,
   _getActiveHandles,
   _getActiveRequests,
   _kill,
-  // TODO: implemented yet in unenv
-  //_linkedBinding,
-  // TODO: implemented yet in unenv
-  //_maxListeners,
+  _linkedBinding,
+  _maxListeners,
   _preload_modules,
   _rawDebug,
   _startProfilerIdleNotifier,
@@ -37,14 +33,12 @@ export {
   cwd,
   debugPort,
   dlopen,
-  // TODO: implemented yet in unenv
-  //domain,
+  domain,
   emit,
   emitWarning,
   eventNames,
   execArgv,
   execPath,
-  exit,
   exitCode,
   features,
   getActiveResourcesInfo,
@@ -68,7 +62,6 @@ export {
   once,
   openStdin,
   pid,
-  platform,
   ppid,
   prependListener,
   prependOnceListener,
@@ -101,19 +94,15 @@ export {
 import {
   _debugEnd,
   _debugProcess,
-  // TODO: implemented yet in unenv
-  //_events,
+  _events,
   _eventsCount,
-  // TODO: implemented yet in unenv
-  //_exiting,
+  _exiting,
   _fatalException,
   _getActiveHandles,
   _getActiveRequests,
   _kill,
-  // TODO: implemented yet in unenv
-  //_linkedBinding,
-  // TODO: implemented yet in unenv
-  //_maxListeners,
+  _linkedBinding,
+  _maxListeners,
   _preload_modules,
   _rawDebug,
   _startProfilerIdleNotifier,
@@ -135,14 +124,12 @@ import {
   cwd,
   debugPort,
   dlopen,
-  // TODO: implemented yet in unenv
-  //domain,
+  domain,
   emit,
   emitWarning,
   eventNames,
   execArgv,
   execPath,
-  exit,
   exitCode,
   features,
   getActiveResourcesInfo,
@@ -154,28 +141,23 @@ import {
   getuid,
   hasUncaughtExceptionCaptureCallback,
   hrtime,
-  // TODO: implemented yet in unenv
-  //initgroups,
+  initgroups,
   kill,
   listenerCount,
   listeners,
   loadEnvFile,
   memoryUsage,
-  // TODO: implemented yet in unenv
-  //moduleLoadList,
+  moduleLoadList,
   off,
   on,
   once,
-  // TODO: implemented yet in unenv
-  //openStdin,
+  openStdin,
   pid,
-  platform,
   ppid,
   prependListener,
   prependOnceListener,
   rawListeners,
-  // TODO: implemented yet in unenv
-  //reallyExit,
+  reallyExit,
   release,
   removeAllListeners,
   removeListener,
@@ -216,9 +198,10 @@ export const getBuiltinModule =
 
 const workerdProcess = getBuiltinModule("node:process") as typeof nodeProcess;
 
-// TODO: Ideally this list is not hardcoded but instead is generated when the preset is being generated in the `env()` call
+// TODO: Ideally this list is not hardcoded but instead is generated when the preset is being
+//       generated in the `env()` call.
 //       This generation should use information from https://github.com/cloudflare/workerd/issues/2097
-export const { env, nextTick } = workerdProcess;
+export const { env, exit, nextTick, platform } = workerdProcess;
 
 const _process = {
   /**
@@ -227,19 +210,15 @@ const _process = {
   // @ts-expect-error (not typed)
   _debugEnd,
   _debugProcess,
-  // TODO: implemented yet in unenv
-  //_events,
+  _events,
   _eventsCount,
-  // TODO: implemented yet in unenv
-  //_exiting,
+  _exiting,
   _fatalException,
   _getActiveHandles,
   _getActiveRequests,
   _kill,
-  // TODO: implemented yet in unenv
-  //_linkedBinding,
-  // TODO: implemented yet in unenv
-  //_maxListeners,
+  _linkedBinding,
+  _maxListeners,
   _preload_modules,
   _rawDebug,
   _startProfilerIdleNotifier,
@@ -261,8 +240,7 @@ const _process = {
   cwd,
   debugPort,
   dlopen,
-  // TODO: implemented yet in unenv
-  //domain,
+  domain,
   emit,
   emitWarning,
   eventNames,
@@ -280,28 +258,24 @@ const _process = {
   getuid,
   hasUncaughtExceptionCaptureCallback,
   hrtime,
-  // TODO: implemented yet in unenv
-  //initgroups,
+  initgroups,
   kill,
   listenerCount,
   listeners,
   loadEnvFile,
   memoryUsage,
-  // TODO: implemented yet in unenv
-  //moduleLoadList,
+  moduleLoadList,
   off,
   on,
   once,
-  // TODO: implemented yet in unenv
-  //openStdin,
+  openStdin,
   pid,
   platform,
   ppid,
   prependListener,
   prependOnceListener,
   rawListeners,
-  // TODO: implemented yet in unenv
-  //reallyExit,
+  reallyExit,
   release,
   removeAllListeners,
   removeListener,
