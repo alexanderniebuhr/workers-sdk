@@ -327,6 +327,11 @@ defineCommand({
 			type: "boolean",
 			describe: "Interact with local storage",
 		},
+		remote: {
+			type: "boolean",
+			describe: "Interact with remote storage",
+			conflicts: "local",
+		},
 		"persist-to": {
 			type: "string",
 			describe: "Directory for local persistence",
@@ -361,7 +366,7 @@ defineCommand({
 		}
 
 		let metricEvent: EventNames;
-		if (args.local) {
+		if (!args.remote) {
 			await usingLocalNamespace(
 				args.persistTo,
 				config.configPath,
@@ -430,6 +435,11 @@ defineCommand({
 			type: "boolean",
 			describe: "Interact with local storage",
 		},
+		remote: {
+			type: "boolean",
+			describe: "Interact with remote storage",
+			conflicts: "local",
+		},
 		"persist-to": {
 			type: "string",
 			describe: "Directory for local persistence",
@@ -447,7 +457,7 @@ defineCommand({
 
 		let result: NamespaceKeyInfo[];
 		let metricEvent: EventNames;
-		if (args.local) {
+		if (!args.remote) {
 			const listResult = await usingLocalNamespace(
 				args.persistTo,
 				config.configPath,
@@ -512,6 +522,11 @@ defineCommand({
 			type: "boolean",
 			describe: "Interact with local storage",
 		},
+		remote: {
+			type: "boolean",
+			describe: "Interact with remote storage",
+			conflicts: "local",
+		},
 		"persist-to": {
 			type: "string",
 			describe: "Directory for local persistence",
@@ -528,7 +543,7 @@ defineCommand({
 
 		let bufferKVValue;
 		let metricEvent: EventNames;
-		if (args.local) {
+		if (!args.remote) {
 			const val = await usingLocalNamespace(
 				args.persistTo,
 				config.configPath,
@@ -602,6 +617,11 @@ defineCommand({
 			type: "boolean",
 			describe: "Interact with local storage",
 		},
+		remote: {
+			type: "boolean",
+			describe: "Interact with remote storage",
+			conflicts: "local",
+		},
 		"persist-to": {
 			type: "string",
 			describe: "Directory for local persistence",
@@ -615,7 +635,7 @@ defineCommand({
 		logger.log(`Deleting the key "${key}" on namespace ${namespaceId}.`);
 
 		let metricEvent: EventNames;
-		if (args.local) {
+		if (!args.remote) {
 			await usingLocalNamespace(
 				args.persistTo,
 				config.configPath,
@@ -687,6 +707,11 @@ defineCommand({
 			type: "boolean",
 			describe: "Interact with local storage",
 		},
+		remote: {
+			type: "boolean",
+			describe: "Interact with remote storage",
+			conflicts: "local",
+		},
 		"persist-to": {
 			type: "string",
 			describe: "Directory for local persistence",
@@ -749,7 +774,7 @@ defineCommand({
 		}
 
 		let metricEvent: EventNames;
-		if (args.local) {
+		if (!args.remote) {
 			await usingLocalNamespace(
 				args.persistTo,
 				config.configPath,
@@ -819,6 +844,11 @@ defineCommand({
 			type: "boolean",
 			describe: "Interact with local storage",
 		},
+		remote: {
+			type: "boolean",
+			describe: "Interact with remote storage",
+			conflicts: "local",
+		},
 		"persist-to": {
 			type: "string",
 			describe: "Directory for local persistence",
@@ -869,7 +899,7 @@ defineCommand({
 		}
 
 		let metricEvent: EventNames;
-		if (args.local) {
+		if (!args.remote) {
 			await usingLocalNamespace(
 				args.persistTo,
 				config.configPath,
