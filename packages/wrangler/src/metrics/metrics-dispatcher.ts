@@ -248,7 +248,8 @@ export const redactArgValues = (
 ) => {
 	const result: Record<string, unknown> = {};
 
-	for (const [key, value] of Object.entries(args)) {
+	for (const [k, value] of Object.entries(args)) {
+		const key = normalise(k);
 		if (exclude.has(key)) {
 			continue;
 		}

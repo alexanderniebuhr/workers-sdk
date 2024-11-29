@@ -207,15 +207,10 @@ describe("metrics", () => {
 				argsCombination: "j, search, xGradualRollouts, xJsonConfig, xVersions",
 				command: "wrangler docs",
 				args: {
-					"experimental-json-config": true,
+					xJsonConfig: true,
 					j: true,
-					experimentalJsonConfig: true,
-					"experimental-versions": true,
-					"x-versions": true,
-					"experimental-gradual-rollouts": true,
 					xVersions: true,
-					experimentalGradualRollouts: true,
-					experimentalVersions: true,
+					xGradualRollouts: true,
 					search: ["<REDACTED>"],
 				},
 			};
@@ -448,13 +443,15 @@ describe("metrics", () => {
 					default: false,
 					array: ["beep", "boop"],
 					secretArray: ["beep", "boop"],
+					// Note how
+					"secret-array": ["beep", "boop"],
 					number: 42,
 					string: "secret",
 					secretString: "secret",
 				};
 
 				const redacted = redactArgValues(args, ["string", "array"]);
-				expect(redacted).toMatchObject({
+				expect(redacted).toEqual({
 					default: false,
 					array: ["beep", "boop"],
 					secretArray: ["<REDACTED>", "<REDACTED>"],
