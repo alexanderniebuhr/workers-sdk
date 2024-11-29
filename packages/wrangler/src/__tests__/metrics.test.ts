@@ -1,10 +1,8 @@
 import { http, HttpResponse } from "msw";
 import { vi } from "vitest";
-import { defineCommand, defineNamespace } from "../core";
-import { DefinitionTreeRoot } from "../core/define-command";
-import { UserError } from "../errors";
 import { CI } from "../is-ci";
 import { logger } from "../logger";
+import { sendMetricsEvent } from "../metrics";
 import {
 	getConfigFileType,
 	getNodeVersion,
@@ -27,12 +25,18 @@ import { useMockIsTTY } from "./helpers/mock-istty";
 import { msw } from "./helpers/msw";
 import { runInTempDir } from "./helpers/run-in-tmp";
 import { runWrangler } from "./helpers/run-wrangler";
-import { writeWranglerToml } from "./helpers/write-wrangler-toml";
-import type { DefinitionTreeNode } from "../core/define-command";
+import { writeWranglerConfig } from "./helpers/write-wrangler-config";
 import type { MockInstance } from "vitest";
 
 vi.mock("../metrics/helpers");
 vi.unmock("../metrics/metrics-config");
+vi.mock("../metrics/send-event");
+
+// eslint-disable-next-line @typescript-eslint/no-namespace
+declare module globalThis {
+	let ALGOLIA_APP_ID: string | undefined;
+	let ALGOLIA_PUBLIC_KEY: string | undefined;
+}
 
 describe("metrics", () => {
 	let isCISpy: MockInstance;
@@ -184,64 +188,7 @@ describe("metrics", () => {
 		});
 
 		describe("sendNewEvent()", () => {
-			let originalDefinitions: [string, DefinitionTreeNode][];
-			// const commonProperties =
-			beforeAll(() => {
-				originalDefinitions = [...DefinitionTreeRoot.subtree.entries()];
-				// register a no-op test command
-				defineNamespace({
-					command: "wrangler command",
-					metadata: {
-						description: "test command namespace",
-						owner: "Workers: Authoring and Testing",
-						status: "stable",
-					},
-				});
-
-				defineCommand({
-					command: "wrangler command subcommand",
-					metadata: {
-						description: "test command",
-						owner: "Workers: Authoring and Testing",
-						status: "stable",
-					},
-					args: {
-						positional: {
-							type: "string",
-							demandOption: true,
-						},
-						optional: {
-							type: "string",
-						},
-						default: {
-							type: "boolean",
-							default: false,
-						},
-						array: {
-							type: "string",
-							array: true,
-							default: ["beep", "boop"],
-						},
-						number: {
-							type: "number",
-							default: 42,
-						},
-					},
-					positionalArgs: ["positional"],
-					handler(args, ctx) {
-						vi.advanceTimersByTime(6000);
-						ctx.logger.log("Ran wrangler command subcommand");
-						if (args.positional === "error") {
-							throw new UserError("oh no");
-						}
-					},
-				});
-			});
-			afterAll(() => {
-				// clean up the command definitions
-				DefinitionTreeRoot.subtree = new Map(originalDefinitions);
-			});
-			const reusedProperties = {
+			const reused = {
 				wranglerVersion: "1.2.3",
 				osPlatform: "mock platform",
 				osVersion: "mock os version",
@@ -250,20 +197,60 @@ describe("metrics", () => {
 				configFileType: "toml",
 				isCI: false,
 				isInteractive: true,
+				argsUsed: [
+					"j",
+					"search",
+					"xGradualRollouts",
+					"xJsonConfig",
+					"xVersions",
+				],
+				argsCombination: "j, search, xGradualRollouts, xJsonConfig, xVersions",
+				command: "wrangler docs",
+				args: {
+					"experimental-json-config": true,
+					j: true,
+					experimentalJsonConfig: true,
+					"experimental-versions": true,
+					"x-versions": true,
+					"experimental-gradual-rollouts": true,
+					xVersions: true,
+					experimentalGradualRollouts: true,
+					experimentalVersions: true,
+					search: ["<REDACTED>"],
+				},
 			};
-			const reusedGlobalArgs = {
-				"experimental-versions": true,
-				"x-versions": true,
-				"experimental-gradual-rollouts": true,
-				xVersions: true,
-				experimentalGradualRollouts: true,
-				experimentalVersions: true,
-			};
+			beforeEach(() => {
+				globalThis.ALGOLIA_APP_ID = "FAKE-ID";
+				globalThis.ALGOLIA_PUBLIC_KEY = "FAKE-KEY";
+				msw.use(
+					http.post<Record<string, never>, { params: string | undefined }>(
+						`*/1/indexes/developers-cloudflare2/query`,
+						async ({ request }) => {
+							vi.advanceTimersByTime(6000);
+							return HttpResponse.json({
+								hits: [
+									{
+										url: `FAKE_DOCS_URL:${await request.text()}`,
+									},
+								],
+							});
+						},
+						{ once: true }
+					)
+				);
+				// docs has an extra sendMetricsEvent call, just do nothing here
+				// because we only want to test the top level sendNewEvent
+				vi.mocked(sendMetricsEvent).mockImplementation(async () => {});
+			});
+			afterEach(() => {
+				delete globalThis.ALGOLIA_APP_ID;
+				delete globalThis.ALGOLIA_PUBLIC_KEY;
+			});
 
 			it("should send a started and completed event", async () => {
 				const requests = mockMetricRequest();
 
-				await runWrangler("command subcommand positional");
+				await runWrangler("docs arg");
 
 				expect(requests.count).toBe(2);
 
@@ -274,24 +261,7 @@ describe("metrics", () => {
 					properties: {
 						amplitude_session_id: 1733961600000,
 						amplitude_event_id: 0,
-						...reusedProperties,
-						argsUsed: [
-							"array",
-							"number",
-							"positional",
-							"xGradualRollouts",
-							"xVersions",
-						],
-						argsCombination:
-							"array, number, positional, xGradualRollouts, xVersions",
-						command: "wrangler command subcommand",
-						args: {
-							...reusedGlobalArgs,
-							default: false,
-							array: ["<REDACTED>", "<REDACTED>"],
-							number: 42,
-							positional: "<REDACTED>",
-						},
+						...reused,
 					},
 				};
 				expect(std.debug).toContain(
@@ -304,24 +274,7 @@ describe("metrics", () => {
 					properties: {
 						amplitude_session_id: 1733961600000,
 						amplitude_event_id: 1,
-						...reusedProperties,
-						argsUsed: [
-							"array",
-							"number",
-							"positional",
-							"xGradualRollouts",
-							"xVersions",
-						],
-						argsCombination:
-							"array, number, positional, xGradualRollouts, xVersions",
-						command: "wrangler command subcommand",
-						args: {
-							...reusedGlobalArgs,
-							default: false,
-							array: ["<REDACTED>", "<REDACTED>"],
-							number: 42,
-							positional: "<REDACTED>",
-						},
+						...reused,
 						durationMs: 6000,
 						durationSeconds: 6,
 						durationMinutes: 0.1,
@@ -334,7 +287,7 @@ describe("metrics", () => {
 				expect(std.out).toMatchInlineSnapshot(`
 					"
 					Cloudflare collects anonymous telemetry about your usage of Wrangler. Learn more at https://github.com/cloudflare/workers-sdk/tree/main/packages/wrangler/telemetry.md
-					Ran wrangler command subcommand"
+					Opening a link in your default browser: FAKE_DOCS_URL:{\\"params\\":\\"query=arg&hitsPerPage=1&getRankingInfo=0\\"}"
 				`);
 				expect(std.warn).toMatchInlineSnapshot(`""`);
 				expect(std.err).toMatchInlineSnapshot(`""`);
@@ -342,11 +295,21 @@ describe("metrics", () => {
 
 			it("should send a started and errored event", async () => {
 				const requests = mockMetricRequest();
-
-				await expect(runWrangler("command subcommand error")).rejects.toThrow(
-					"oh no"
+				msw.use(
+					http.post<Record<string, never>, { params: string | undefined }>(
+						`*/1/indexes/developers-cloudflare2/query`,
+						async ({}) => {
+							vi.advanceTimersByTime(6000);
+							return HttpResponse.error();
+						},
+						{ once: true }
+					)
 				);
-
+				await expect(
+					runWrangler("docs arg")
+				).rejects.toThrowErrorMatchingInlineSnapshot(
+					`[TypeError: Failed to fetch]`
+				);
 				expect(requests.count).toBe(2);
 
 				const expectedStartReq = {
@@ -356,24 +319,7 @@ describe("metrics", () => {
 					properties: {
 						amplitude_session_id: 1733961600000,
 						amplitude_event_id: 0,
-						...reusedProperties,
-						argsUsed: [
-							"array",
-							"number",
-							"positional",
-							"xGradualRollouts",
-							"xVersions",
-						],
-						argsCombination:
-							"array, number, positional, xGradualRollouts, xVersions",
-						command: "wrangler command subcommand",
-						args: {
-							...reusedGlobalArgs,
-							default: false,
-							array: ["<REDACTED>", "<REDACTED>"],
-							number: 42,
-							positional: "<REDACTED>",
-						},
+						...reused,
 					},
 				};
 				expect(std.debug).toContain(
@@ -387,28 +333,11 @@ describe("metrics", () => {
 					properties: {
 						amplitude_session_id: 1733961600000,
 						amplitude_event_id: 1,
-						...reusedProperties,
-						argsUsed: [
-							"array",
-							"number",
-							"positional",
-							"xGradualRollouts",
-							"xVersions",
-						],
-						argsCombination:
-							"array, number, positional, xGradualRollouts, xVersions",
-						command: "wrangler command subcommand",
-						args: {
-							...reusedGlobalArgs,
-							default: false,
-							array: ["<REDACTED>", "<REDACTED>"],
-							number: 42,
-							positional: "<REDACTED>",
-						},
+						...reused,
 						durationMs: 6000,
 						durationSeconds: 6,
 						durationMinutes: 0.1,
-						errorType: "UserError",
+						errorType: "TypeError",
 					},
 				};
 
@@ -421,7 +350,7 @@ describe("metrics", () => {
 				isCISpy.mockReturnValue(true);
 				const requests = mockMetricRequest();
 
-				await runWrangler("command subcommand positional");
+				await runWrangler("docs arg");
 
 				expect(requests.count).toBe(2);
 				expect(std.debug).toContain('isCI":true');
@@ -431,7 +360,7 @@ describe("metrics", () => {
 				setIsTTY(false);
 				const requests = mockMetricRequest();
 
-				await runWrangler("command subcommand positional");
+				await runWrangler("docs arg");
 
 				expect(requests.count).toBe(2);
 				expect(std.debug).toContain('"isInteractive":false,');
@@ -452,11 +381,11 @@ describe("metrics", () => {
 
 					const requests = mockMetricRequest();
 
-					await runWrangler("command subcommand positional");
+					await runWrangler("docs arg");
 					expect(std.out).toMatchInlineSnapshot(`
 						"
 						Cloudflare collects anonymous telemetry about your usage of Wrangler. Learn more at https://github.com/cloudflare/workers-sdk/tree/main/packages/wrangler/telemetry.md
-						Ran wrangler command subcommand"
+						Opening a link in your default browser: FAKE_DOCS_URL:{\\"params\\":\\"query=arg&hitsPerPage=1&getRankingInfo=0\\"}"
 					`);
 
 					expect(requests.count).toBe(2);
@@ -470,10 +399,10 @@ describe("metrics", () => {
 						},
 					});
 					const requests = mockMetricRequest();
-					await runWrangler("command subcommand positional");
-					expect(std.out).toMatchInlineSnapshot(`
-						"Ran wrangler command subcommand"
-					`);
+					await runWrangler("docs arg");
+					expect(std.out).not.toContain(
+						"Cloudflare collects anonymous telemetry about your usage of Wrangler. Learn more at https://github.com/cloudflare/workers-sdk/tree/main/packages/wrangler/telemetry.md"
+					);
 					expect(requests.count).toBe(2);
 				});
 				it("should print the banner if nothing is stored under bannerLastShown and then store the current version", async () => {
@@ -484,11 +413,11 @@ describe("metrics", () => {
 						},
 					});
 					const requests = mockMetricRequest();
-					await runWrangler("command subcommand positional");
+					await runWrangler("docs arg");
 					expect(std.out).toMatchInlineSnapshot(`
 						"
 						Cloudflare collects anonymous telemetry about your usage of Wrangler. Learn more at https://github.com/cloudflare/workers-sdk/tree/main/packages/wrangler/telemetry.md
-						Ran wrangler command subcommand"
+						Opening a link in your default browser: FAKE_DOCS_URL:{\\"params\\":\\"query=arg&hitsPerPage=1&getRankingInfo=0\\"}"
 					`);
 					expect(requests.count).toBe(2);
 					const { permission } = readMetricsConfig();
@@ -502,10 +431,10 @@ describe("metrics", () => {
 						},
 					});
 					const requests = mockMetricRequest();
-					await runWrangler("command subcommand positional");
-					expect(std.out).toMatchInlineSnapshot(`
-						"Ran wrangler command subcommand"
-					`);
+					await runWrangler("docs arg");
+					expect(std.out).not.toContain(
+						"Cloudflare collects anonymous telemetry about your usage of Wrangler. Learn more at https://github.com/cloudflare/workers-sdk/tree/main/packages/wrangler/telemetry.md"
+					);
 					expect(requests.count).toBe(0);
 					const { permission } = readMetricsConfig();
 					expect(permission?.bannerLastShown).toBeUndefined();
@@ -680,7 +609,7 @@ describe("metrics", () => {
 						date: new Date(2022, 6, 4),
 					},
 				});
-				writeWranglerToml({ send_metrics: false });
+				writeWranglerConfig({ send_metrics: false });
 				await runWrangler(`${cmd} status`);
 				expect(std.out).toContain("Status: Disabled (set by wrangler.toml)");
 			});
@@ -712,7 +641,7 @@ describe("metrics", () => {
 						date: new Date(2022, 6, 4),
 					},
 				});
-				writeWranglerToml({ send_metrics: true });
+				writeWranglerConfig({ send_metrics: true });
 				vi.stubEnv("WRANGLER_SEND_METRICS", "false");
 				await runWrangler(`${cmd} status`);
 				expect(std.out).toContain(

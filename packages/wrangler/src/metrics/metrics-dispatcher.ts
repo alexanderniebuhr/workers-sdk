@@ -48,6 +48,7 @@ export function getMetricsDispatcher(options: MetricsConfigOptions) {
 	};
 
 	return {
+		// TODO: use "sendNewEvent" (and rename that) when all commands use defineCommand
 		/**
 		 * Dispatch a event to the analytics target.
 		 *
@@ -70,8 +71,9 @@ export function getMetricsDispatcher(options: MetricsConfigOptions) {
 		/**
 		 * Dispatches `wrangler command started / completed / errored` events
 		 *
-		 * This happens on every command execution, and will (hopefully) replace sendEvent soon.
-		 * However to prevent disruption, we're adding under `sendNewEvent` for now.
+		 * This happens on every command execution. When all commands use defineCommand,
+		 * we should use that to provide the dispatcher on all handlers, and change all
+		 * `sendEvent` calls to use this method.
 		 */
 		async sendNewEvent<EventName extends Events["name"]>(
 			name: EventName,
