@@ -1,11 +1,14 @@
 import chalk from "chalk";
-import { defineAlias, defineCommand, defineNamespace } from "../core";
+import {
+	createAlias,
+	createCommand,
+	createNamespace,
+} from "../core/create-command";
 import { getWranglerSendMetricsFromEnv } from "../environment-variables/misc-variables";
 import { logger } from "../logger";
 import { readMetricsConfig, updateMetricsPermission } from "./metrics-config";
 
-defineNamespace({
-	command: "wrangler telemetry",
+export const telemetryNamespace = createNamespace({
 	metadata: {
 		description: "📈 Configure whether Wrangler collects telemetry",
 		owner: "Workers: Authoring and Testing",
@@ -14,13 +17,11 @@ defineNamespace({
 	},
 });
 
-defineAlias({
-	command: "wrangler metrics",
+export const metricsAlias = createAlias({
 	aliasOf: "wrangler telemetry",
 });
 
-defineCommand({
-	command: "wrangler telemetry disable",
+export const telemetryDisableCommand = createCommand({
 	metadata: {
 		description: "Disable Wrangler telemetry collection",
 		owner: "Workers: Authoring and Testing",
@@ -35,8 +36,7 @@ defineCommand({
 	},
 });
 
-defineCommand({
-	command: "wrangler telemetry enable",
+export const telemetryEnableCommand = createCommand({
 	metadata: {
 		description: "Enable Wrangler telemetry collection",
 		owner: "Workers: Authoring and Testing",
@@ -51,8 +51,7 @@ defineCommand({
 	},
 });
 
-defineCommand({
-	command: "wrangler telemetry status",
+export const telemetryStatusCommand = createCommand({
 	metadata: {
 		description: "Check whether Wrangler telemetry collection is enabled",
 		owner: "Workers: Authoring and Testing",

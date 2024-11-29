@@ -74,6 +74,13 @@ import {
 } from "./kv";
 import { logBuildFailure, logger, LOGGER_LEVELS } from "./logger";
 import { getMetricsDispatcher } from "./metrics";
+import {
+	metricsAlias,
+	telemetryDisableCommand,
+	telemetryEnableCommand,
+	telemetryNamespace,
+	telemetryStatusCommand,
+} from "./metrics/commands";
 import { mTlsCertificateCommands } from "./mtls-certificate/cli";
 import { writeOutput } from "./output";
 import { pages } from "./pages";
@@ -931,6 +938,30 @@ export function createCLIParser(argv: string[]) {
 		},
 	]);
 	registry.registerNamespace("whoami");
+
+	registry.define([
+		{
+			command: "wrangler telemetry",
+			definition: telemetryNamespace,
+		},
+		{
+			command: "wrangler metrics",
+			definition: metricsAlias,
+		},
+		{
+			command: "wrangler telemetry disable",
+			definition: telemetryDisableCommand,
+		},
+		{
+			command: "wrangler telemetry enable",
+			definition: telemetryEnableCommand,
+		},
+		{
+			command: "wrangler telemetry status",
+			definition: telemetryStatusCommand,
+		},
+	]);
+	registry.registerNamespace("telemetry");
 
 	/******************************************************/
 	/*               DEPRECATED COMMANDS                  */
